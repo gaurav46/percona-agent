@@ -121,6 +121,11 @@ func (c *Connection) Explain(query string, db string) (explain *proto.ExplainRes
 		return nil, err
 	}
 
+	err = c.fillCreateTableInClassicExplain(tx, classicExplain)
+	if err != nil {
+		return nil, err
+	}
+
 	jsonExplain, err := c.jsonExplain(tx, query)
 	if err != nil {
 		return nil, err
@@ -228,6 +233,7 @@ func (c *Connection) classicExplain(tx *sql.Tx, query string) (classicExplain []
 		if err != nil {
 			return nil, err
 		}
+
 		classicExplain = append(classicExplain, explainRow)
 	}
 	err = rows.Err()
@@ -269,4 +275,49 @@ func (c *Connection) jsonExplain(tx *sql.Tx, query string) (jsonExplain string, 
 		return "", err
 	}
 	return jsonExplain, nil
+}
+
+func (c *Connection) showCreateTable(tx *sql.Tx, table string) (createTable proto.NullString, err error) {
+	// Result from SHOW CREATE TABLE includes two columns,
+	// "Table" and "Create Table", we ignore the first one as we need only "Create Table"
+	var tableName string
+	err = tx.QueryRow(fmt.Sprintf("SHOW CREATE TABLE %s", table)).Scan(&tableName, &createTable)
+	if err != nil {
+		return proto.NullString{}, err
+	}
+	return createTable, nil
+}
+
+func (c *Connection) fillCreateTableInClassicExplain(tx *sql.Tx, classicExplain []*proto.ExplainRow) (err error) {
+	for _, explainRow := range classicExplain {
+		tableName := explainRow.Table.String
+		if isRealTable(tableName) {
+			explainRow.CreateTable, err = c.showCreateTable(tx, tableName)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// http://dev.mysql.com/doc/refman/5.6/en/explain-output.html#explain_table
+func isRealTable(tableName string) bool {
+	// If table name is empty then this is obviously not a real table
+	if tableName == "" {
+		return false
+	}
+
+	// Table is not real also if it matches one of the following values:
+	// *    <unionM,N>: The row refers to the union of the rows with id values of M and N.
+	// *    <derivedN>: The row refers to the derived table result for the row with an id value of N.
+	//                  A derived table may result, for example, from a subquery in the FROM clause.
+	// *    <subqueryN>: The row refers to the result of a materialized subquery for the row with an id value of N.
+	// So, for simplicity assuming that table is not real if first letter matches "<"
+	if string([]rune(tableName)[0]) == "<" {
+		return false
+	}
+
+	return true
 }

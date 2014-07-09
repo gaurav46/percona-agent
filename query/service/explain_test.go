@@ -247,8 +247,8 @@ func (s *ManagerTestSuite) TestExplainWithDb(t *C) {
 				},
 				CreateTable: proto.NullString{
 					NullString: sql.NullString{
-						String: "",
-						Valid:  false,
+						String: "CREATE TEMPORARY TABLE `TABLES` (\n  `TABLE_CATALOG` varchar(512) NOT NULL DEFAULT '',\n  `TABLE_SCHEMA` varchar(64) NOT NULL DEFAULT '',\n  `TABLE_NAME` varchar(64) NOT NULL DEFAULT '',\n  `TABLE_TYPE` varchar(64) NOT NULL DEFAULT '',\n  `ENGINE` varchar(64) DEFAULT NULL,\n  `VERSION` bigint(21) unsigned DEFAULT NULL,\n  `ROW_FORMAT` varchar(20) DEFAULT NULL,\n  `TABLE_ROWS` bigint(21) unsigned DEFAULT NULL,\n  `AVG_ROW_LENGTH` bigint(21) unsigned DEFAULT NULL,\n  `DATA_LENGTH` bigint(21) unsigned DEFAULT NULL,\n  `MAX_DATA_LENGTH` bigint(21) unsigned DEFAULT NULL,\n  `INDEX_LENGTH` bigint(21) unsigned DEFAULT NULL,\n  `DATA_FREE` bigint(21) unsigned DEFAULT NULL,\n  `AUTO_INCREMENT` bigint(21) unsigned DEFAULT NULL,\n  `CREATE_TIME` datetime DEFAULT NULL,\n  `UPDATE_TIME` datetime DEFAULT NULL,\n  `CHECK_TIME` datetime DEFAULT NULL,\n  `TABLE_COLLATION` varchar(32) DEFAULT NULL,\n  `CHECKSUM` bigint(21) unsigned DEFAULT NULL,\n  `CREATE_OPTIONS` varchar(255) DEFAULT NULL,\n  `TABLE_COMMENT` varchar(2048) NOT NULL DEFAULT ''\n) ENGINE=MEMORY DEFAULT CHARSET=utf8",
+						Valid:  true,
 					},
 				},
 				Type: proto.NullString{
