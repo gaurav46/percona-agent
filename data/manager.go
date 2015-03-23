@@ -20,11 +20,12 @@ package data
 import (
 	"encoding/json"
 	"errors"
-	"github.com/percona/cloud-protocol/proto"
-	"github.com/percona/percona-agent/pct"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/percona/cloud-protocol/proto"
+	"github.com/percona/percona-agent/pct"
 )
 
 type Manager struct {
@@ -73,7 +74,7 @@ func (m *Manager) Start() error {
 	m.status.Update("data", "Starting")
 
 	// Load config from disk (optional, but should exist).
-	config := &Config{}
+	var config *Config
 	if err := pct.Basedir.ReadConfig("data", config); err != nil {
 		if !os.IsNotExist(err) {
 			return err

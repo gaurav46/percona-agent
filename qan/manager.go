@@ -53,7 +53,7 @@ type Manager struct {
 	// --
 	mux       *sync.RWMutex
 	running   bool
-	analyzers map[uint]AnalyzerInstance
+	analyzers map[string]AnalyzerInstance
 	status    *pct.Status
 }
 
@@ -74,7 +74,7 @@ func NewManager(
 		analyzerFactory: analyzerFactory,
 		// --
 		mux:       &sync.RWMutex{},
-		analyzers: make(map[uint]AnalyzerInstance),
+		analyzers: make(map[string]AnalyzerInstance),
 		status:    pct.NewStatus([]string{"qan"}),
 	}
 	return m
@@ -297,19 +297,15 @@ func (m *Manager) startAnalyzer(config Config) error {
 	// Check if an analyzer for this MySQL instance already exists.
 	if a, ok := m.analyzers[config.InstanceId]; ok {
 		return pct.ServiceIsRunningError{Service: a.analyzer.String()}
-
 	}
 
 	// Get the MySQL DSN and create a MySQL connection.
 	// TODO: FIX THIS THIS WAS CHANGED FOR INSTANCE REFACTOR
-	//mysqlInstance, err := m.im.Get(config.InstanceId)
-	_, err := m.im.Get(string(config.InstanceId))
+	mysqlInstance, err := m.im.Get(config.InstanceId)
 	if err != nil {
 		return fmt.Errorf("Cannot get MySQL instance from repo: %s", err)
 	}
-	// This should use properties
-	//mysqlConn := m.mysqlFactory.Make(mysqlInstance.DSN)
-	mysqlConn := m.mysqlFactory.Make("whatever")
+	mysqlConn := m.mysqlFactory.Make(mysqlInstance.Properties["dsn"])
 
 	// Add the MySQL DSN to the MySQL restart monitor. If MySQL restarts,
 	// the analyzer will stop its worker and re-configure MySQL.
@@ -348,7 +344,7 @@ func (m *Manager) startAnalyzer(config Config) error {
 	return nil // success
 }
 
-func (m *Manager) stopAnalyzer(instanceId uint) error {
+func (m *Manager) stopAnalyzer(instanceId string) error {
 	/*
 		XXX Assume caller has locked m.mux.
 	*/

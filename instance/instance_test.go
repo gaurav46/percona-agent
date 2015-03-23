@@ -24,10 +24,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/instance"
+	"github.com/percona/percona-agent/mysql"
 	"github.com/percona/percona-agent/pct"
 	"github.com/percona/percona-agent/test"
 	"github.com/percona/percona-agent/test/mock"
@@ -38,14 +40,13 @@ import (
 func Test(t *testing.T) { TestingT(t) }
 
 type RepoTestSuite struct {
-	tmpDir        string
-	logChan       chan *proto.LogEntry
-	logger        *pct.Logger
-	configDir     string
-	api           *mock.API
-	instances     proto.Instance
-	instancesFile string
-	im            *instance.Repo
+	tmpDir    string
+	logChan   chan *proto.LogEntry
+	logger    *pct.Logger
+	configDir string
+	api       *mock.API
+	//instances []proto.InstanceConfig
+	repo *instance.Repo
 }
 
 var _ = Suite(&RepoTestSuite{})
@@ -84,18 +85,16 @@ func (s *RepoTestSuite) SetUpTest(t *C) {
 		"insts": "http://localhost/insts",
 	}
 	s.api = mock.NewAPI("http://localhost", "http://localhost", "123", "abc-123-def", links)
-	s.im = instance.NewRepo(s.logger, s.configDir, s.api)
-	t.Assert(s.im, NotNil)
+	s.repo = instance.NewRepo(s.logger, s.configDir, s.api)
+	t.Assert(s.repo, NotNil)
 
-	s.instancesFile = filepath.Join(s.configDir, "instances.conf")
-	err := test.CopyFile(test.RootDir+"/instance/instances-1.conf", s.instancesFile)
+	files, err := filepath.Glob(test.RootDir + "/instance/instance-*.conf")
 	t.Assert(err, IsNil)
 
-	data, err := ioutil.ReadFile(s.instancesFile)
-	t.Assert(err, IsNil)
-
-	err = json.Unmarshal(data, &s.instances)
-	t.Assert(err, IsNil)
+	for _, file := range files {
+		err := test.CopyFile(file, s.configDir)
+		t.Assert(err, IsNil)
+	}
 }
 
 func (s *RepoTestSuite) TearDownSuite(t *C) {
@@ -107,342 +106,254 @@ func (s *RepoTestSuite) TearDownSuite(t *C) {
 // --------------------------------------------------------------------------
 
 func (s *RepoTestSuite) TestInit(t *C) {
-	err := s.im.Init()
+	err := s.repo.Init()
 	t.Assert(err, IsNil)
 
-	tree := s.im.Instances()
-	if same, diff := test.IsDeeply(tree, s.instances); !same {
-		test.Dump(tree)
-		test.Dump(s.instances)
+	insts := s.repo.List()
+	t.Assert(len(insts), Equals, 4)
+	instsIDs := make([]string, 0)
+	for _, inst := range insts {
+		instsIDs = append(instsIDs, inst.UUID)
+	}
+
+	expectIDs := []string{"31dd3b7b602849f8871fd3e7acc8c2e3",
+		"dc2b15a5400b4c67ab27848255468e65",
+		"c540346a644b404a9d2ae006122fc5a2",
+		"fb1be804a02ae1d4c6418d72c0dfe84d"}
+
+	sort.Strings(instsIDs)
+	sort.Strings(expectIDs)
+
+	if same, diff := test.IsDeeply(instsIDs, expectIDs); !same {
+		test.Dump(instsIDs)
+		test.Dump(expectIDs)
 		t.Error(diff)
 	}
-	t.Assert(len(s.im.List()), Equals, 6)
 }
 
-func (s *RepoTestSuite) TestInitDownload(t *C) {
-	bin, err := ioutil.ReadFile(s.instancesFile)
+func (s *RepoTestSuite) TestInitDuplicatedInstance(t *C) {
+	// Lets copy and extra config file containing an already present UUID.
+	// Filename UUID is valid
+	err := test.CopyFile(test.RootDir+"/instance/instance-31dd3b7b602849f8871fd3e7acc8c2e3.conf",
+		s.configDir+"/instance-088fd03e46b795858d0dba8f67b3ac6e.conf")
+	t.Assert(err, IsNil)
+
+	expect := pct.DuplicateInstanceError{Id: "31dd3b7b602849f8871fd3e7acc8c2e3"}
+	err = s.repo.Init()
+	t.Assert(err, NotNil)
+	if expect.Error() == err.Error() {
+		t.Error("Init should have returned pct.DuplicatedInstanceError")
+	}
+}
+
+func (s *RepoTestSuite) TestGetDownload(t *C) {
+	configFile := s.configDir + "/instance-31dd3b7b602849f8871fd3e7acc8c2e3.conf"
+
+	// Remove one config file from configDir
+	err := os.Remove(configFile)
+	t.Assert(err, IsNil)
+
+	bin, err := ioutil.ReadFile(test.RootDir + "/instance/instance-31dd3b7b602849f8871fd3e7acc8c2e3.conf")
 	t.Assert(err, IsNil)
 	s.api.GetData = [][]byte{bin}
 	s.api.GetCode = []int{http.StatusOK}
 
-	// Remove our local test config file, so Init will download it can place it there
-	err = os.Remove(s.instancesFile)
+	// This should download the config and place it in configDir
+	_, err = s.repo.Get("31dd3b7b602849f8871fd3e7acc8c2e3")
+	t.Assert(err, IsNil)
+	t.Assert(pct.FileExists(configFile), Equals, true)
+	downloadedFile, err := ioutil.ReadFile(configFile)
+	t.Assert(err, IsNil)
+	var downloadedConfig *proto.InstanceConfig
+	err = json.Unmarshal(downloadedFile, &downloadedConfig)
+	t.Assert(err, IsNil)
+	var expectConfig *proto.InstanceConfig
+	err = json.Unmarshal(bin, &expectConfig)
 	t.Assert(err, IsNil)
 
-	err = s.im.Init()
-	t.Assert(err, IsNil)
-
-	t.Assert(pct.FileExists(s.instancesFile), Equals, true)
-	downloadedFile, err := ioutil.ReadFile(s.instancesFile)
-	t.Assert(err, IsNil)
-	if same, _ := test.IsDeeply(downloadedFile, bin); !same {
-		t.Error("Downloaded instances file is not the same as the original test config file")
-	}
-
-	tree := s.im.Instances()
-	if same, diff := test.IsDeeply(tree, s.instances); !same {
-		test.Dump(tree)
-		test.Dump(s.instances)
-		t.Error(diff)
+	if same, _ := test.IsDeeply(*downloadedConfig, *expectConfig); !same {
+		t.Error("Downloaded instances file is different from the original test config file")
 	}
 }
 
-func (s *RepoTestSuite) TestUpdateTreeWrongRoot(t *C) {
-	// Init with test data
-	err := s.im.Init()
+func (s *RepoTestSuite) TestGetAddRemove(t *C) {
+	t.Check(test.FileExists(s.configDir+"/instance-e4b65f107a4caca10e72ac1f1b23e4aa.conf"), Equals, false)
+
+	mysqlIt := proto.InstanceConfig{}
+	mysqlIt.Type = "MySQL"
+	mysqlIt.Prefix = "mysql"
+	mysqlIt.UUID = "e4b65f107a4caca10e72ac1f1b23e4aa"
+	mysqlIt.Properties = map[string]string{"dsn": "test:test@localhost/db1"}
+
+	err := s.repo.Add(mysqlIt, true)
 	t.Assert(err, IsNil)
 
-	// Request 2 instance tree copies (using instances-1.conf fixture)
-	orig_tree := s.im.Instances()
-	tree := s.im.Instances()
+	t.Check(test.FileExists(s.configDir+"/instance-e4b65f107a4caca10e72ac1f1b23e4aa.conf"), Equals, true)
 
-	// Make our test tree root instance not an OS type, pick any Subsystem
-	tree = tree.Subsystems[0]
-
-	added := make([]proto.Instance, 0)
-	deleted := make([]proto.Instance, 0)
-	updated := make([]proto.Instance, 0)
-	err = s.im.UpdateTree(tree, &added, &deleted, &updated, true)
-	t.Assert(err, NotNil)
-
-	// No instance was updated
-	t.Assert(len(added), Equals, 0)
-	t.Assert(len(deleted), Equals, 0)
-	t.Assert(len(updated), Equals, 0)
-
-	// Check if saved instance config was not modified
-	savedTreeData, err := ioutil.ReadFile(s.instancesFile)
+	var got *proto.InstanceConfig
+	got, err = s.repo.Get("e4b65f107a4caca10e72ac1f1b23e4aa")
 	t.Assert(err, IsNil)
-	var savedTree *proto.Instance = nil
-	err = json.Unmarshal(savedTreeData, &savedTree)
-	t.Assert(err, IsNil)
-	if same, diff := test.IsDeeply(&orig_tree, savedTree); !same {
-		test.Dump(&orig_tree)
-		test.Dump(savedTree)
+	if same, diff := test.IsDeeply(*got, mysqlIt); !same {
 		t.Error(diff)
 	}
-}
 
-func (s *RepoTestSuite) TestUpdateTree(t *C) {
-	// Init with test data
-	err := s.im.Init()
+	data, err := ioutil.ReadFile(s.configDir + "/instance-e4b65f107a4caca10e72ac1f1b23e4aa.conf")
 	t.Assert(err, IsNil)
 
-	// Request an instance tree copy (using instances-1.conf fixture)
-	tree := s.im.Instances()
-
-	// Lets modify one instance in our test tree copy
-	// index 1 corresponds to instance c540346a644b404a9d2ae006122fc5a2
-	tree.Subsystems[1].Properties["dsn"] = "other DSN"
-
-	added := make([]proto.Instance, 0)
-	deleted := make([]proto.Instance, 0)
-	updated := make([]proto.Instance, 0)
-	err = s.im.UpdateTree(tree, &added, &deleted, &updated, true)
+	err = json.Unmarshal(data, got)
 	t.Assert(err, IsNil)
-
-	// Only 1 instance was updated
-	t.Assert(len(added), Equals, 0)
-	t.Assert(len(deleted), Equals, 0)
-	t.Assert(len(updated), Equals, 1)
-	// Verify updated instance is the correct one
-	t.Assert(updated[0].UUID, Equals, "c540346a644b404a9d2ae006122fc5a2")
-	t.Assert(updated[0].Properties["dsn"], Equals, "other DSN")
-
-	// Check if saved file has the same modified tree structure
-	savedTree, err := ioutil.ReadFile(s.instancesFile)
-	t.Assert(err, IsNil)
-	var newTree *proto.Instance = nil
-	err = json.Unmarshal(savedTree, &newTree)
-	t.Assert(err, IsNil)
-	if same, diff := test.IsDeeply(&tree, newTree); !same {
-		test.Dump(&tree)
-		test.Dump(newTree)
+	if same, diff := test.IsDeeply(*got, mysqlIt); !same {
 		t.Error(diff)
 	}
+
+	s.repo.Remove("e4b65f107a4caca10e72ac1f1b23e4aa")
+	t.Check(test.FileExists(s.configDir+"/instance-e4b65f107a4caca10e72ac1f1b23e4aa.conf"), Equals, false)
 }
-
-//func (s *RepoTestSuite) TestGetAddRemove(t *C) {
-//	im := instance.NewRepo(s.logger, s.configDir, s.api)
-//	t.Assert(im, NotNil)
-
-//	t.Check(test.FileExists(s.configDir+"/mysql-1.conf"), Equals, false)
-
-//	mysqlIt := &proto.MySQLInstance{
-//		Id:       1,
-//		Hostname: "db1",
-//		DSN:      "user:host@tcp:(127.0.0.1:3306)",
-//		Distro:   "Percona Server",
-//		Version:  "5.6.16",
-//	}
-//	data, err := json.Marshal(mysqlIt)
-//	t.Assert(err, IsNil)
-//	err = im.Add("mysql", 1, data, true)
-//	t.Assert(err, IsNil)
-
-//	t.Check(test.FileExists(s.configDir+"/mysql-1.conf"), Equals, true)
-
-//	got := &proto.MySQLInstance{}
-//	err = im.Get("mysql", 1, got)
-//	t.Assert(err, IsNil)
-//	if same, diff := test.IsDeeply(got, mysqlIt); !same {
-//		t.Error(diff)
-//	}
-
-//	data, err = ioutil.ReadFile(s.configDir + "/mysql-1.conf")
-//	t.Assert(err, IsNil)
-
-//	got = &proto.MySQLInstance{}
-//	err = json.Unmarshal(data, got)
-//	t.Assert(err, IsNil)
-//	if same, diff := test.IsDeeply(got, mysqlIt); !same {
-//		t.Error(diff)
-//	}
-
-//	im.Remove("mysql", 1)
-//	t.Check(test.FileExists(s.configDir+"/mysql-1.conf"), Equals, false)
-//}
-
-//func (s *RepoTestSuite) TestErrors(t *C) {
-//	im := instance.NewRepo(s.logger, s.configDir, s.api)
-//	t.Assert(im, NotNil)
-
-//	mysqlIt := &proto.MySQLInstance{
-//		Id:       0,
-//		Hostname: "db1",
-//		DSN:      "user:host@tcp:(127.0.0.1:3306)",
-//		Distro:   "Percona Server",
-//		Version:  "5.6.16",
-//	}
-//	data, err := json.Marshal(mysqlIt)
-//	t.Assert(err, IsNil)
-
-//	// Instance ID must be > 0.
-//	err = im.Add("mysql", 0, data, false)
-//	t.Assert(err, NotNil)
-
-//	// Service name must be one of proto.ExternalService.
-//	err = im.Add("foo", 1, data, false)
-//	t.Assert(err, NotNil)
-//}
 
 ///////////////////////////////////////////////////////////////////////////////
 //// Manager test suite
 ///////////////////////////////////////////////////////////////////////////////
 
-//type ManagerTestSuite struct {
-//	tmpDir    string
-//	logChan   chan *proto.LogEntry
-//	logger    *pct.Logger
-//	configDir string
-//	api       *mock.API
-//}
+type ManagerTestSuite struct {
+	tmpDir    string
+	logChan   chan *proto.LogEntry
+	logger    *pct.Logger
+	configDir string
+	api       *mock.API
+}
 
-//var _ = Suite(&ManagerTestSuite{})
+var _ = Suite(&ManagerTestSuite{})
 
-//func (s *ManagerTestSuite) SetUpSuite(t *C) {
-//	var err error
-//	s.tmpDir, err = ioutil.TempDir("/tmp", "agent-test")
-//	t.Assert(err, IsNil)
+func (s *ManagerTestSuite) SetUpSuite(t *C) {
+	var err error
+	s.tmpDir, err = ioutil.TempDir("/tmp", "agent-test")
+	t.Assert(err, IsNil)
 
-//	if err := pct.Basedir.Init(s.tmpDir); err != nil {
-//		t.Fatal(err)
-//	}
-//	s.configDir = pct.Basedir.Dir("config")
+	if err := pct.Basedir.Init(s.tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	s.configDir = pct.Basedir.Dir("config")
 
-//	s.logChan = make(chan *proto.LogEntry, 10)
-//	s.logger = pct.NewLogger(s.logChan, "pct-it-test")
+	s.logChan = make(chan *proto.LogEntry, 10)
+	s.logger = pct.NewLogger(s.logChan, "pct-it-test")
 
-//	links := map[string]string{
-//		"agent":     "http://localhost/agent",
-//		"instances": "http://localhost/instances",
-//	}
-//	s.api = mock.NewAPI("http://localhost", "http://localhost", "123", "abc-123-def", links)
-//}
+	links := map[string]string{
+		"agent": "http://localhost/agent",
+		"insts": "http://localhost/insts",
+	}
+	s.api = mock.NewAPI("http://localhost", "http://localhost", "123", "abc-123-def", links)
+}
 
-//func (s *ManagerTestSuite) SetUpTest(t *C) {
-//	files, _ := filepath.Glob(s.configDir + "/*")
-//	for _, file := range files {
-//		if err := os.Remove(file); err != nil {
-//			t.Error(err)
-//		}
-//	}
-//}
+func (s *ManagerTestSuite) SetUpTest(t *C) {
+	files, _ := filepath.Glob(s.configDir + "/*")
+	for _, file := range files {
+		if err := os.Remove(file); err != nil {
+			t.Error(err)
+		}
+	}
+}
 
-//func (s *ManagerTestSuite) TearDownSuite(t *C) {
-//	if err := os.RemoveAll(s.tmpDir); err != nil {
-//		t.Error(err)
-//	}
-//}
+func (s *ManagerTestSuite) TearDownSuite(t *C) {
+	if err := os.RemoveAll(s.tmpDir); err != nil {
+		t.Error(err)
+	}
+}
 
-//var dsn = os.Getenv("PCT_TEST_MYSQL_DSN")
+var dsn = os.Getenv("PCT_TEST_MYSQL_DSN")
 
 //// --------------------------------------------------------------------------
 
-//func (s *ManagerTestSuite) TestHandleGetInfoMySQL(t *C) {
-//	if dsn == "" {
-//		t.Fatal("PCT_TEST_MYSQL_DSN is not set")
-//	}
+func (s *ManagerTestSuite) TestHandleGetInfoMySQL(t *C) {
+	if dsn == "" {
+		t.Fatal("PCT_TEST_MYSQL_DSN is not set")
+	}
 
-//	/**
-//	 * First get MySQL info manually.  This is what GetInfo should do, too.
-//	 */
+	/**
+	 * First get MySQL info manually.  This is what GetInfo should do, too.
+	 */
 
-//	conn := mysql.NewConnection(dsn)
-//	if err := conn.Connect(1); err != nil {
-//		t.Fatal(err)
-//	}
-//	var hostname, distro, version string
-//	sql := "SELECT" +
-//		" CONCAT_WS('.', @@hostname, IF(@@port='3306',NULL,@@port)) AS Hostname," +
-//		" @@version_comment AS Distro," +
-//		" @@version AS Version"
-//	if err := conn.DB().QueryRow(sql).Scan(&hostname, &distro, &version); err != nil {
-//		t.Fatal(err)
-//	}
+	conn := mysql.NewConnection(dsn)
+	if err := conn.Connect(1); err != nil {
+		t.Fatal(err)
+	}
+	var hostname, distro, version string
+	sql := "SELECT" +
+		" CONCAT_WS('.', @@hostname, IF(@@port='3306',NULL,@@port)) AS Hostname," +
+		" @@version_comment AS Distro," +
+		" @@version AS Version"
+	if err := conn.DB().QueryRow(sql).Scan(&hostname, &distro, &version); err != nil {
+		t.Fatal(err)
+	}
 
-//	/**
-//	 * Now use the instance manager and GetInfo to get MySQL info like API would.
-//	 */
+	/**
+	 * Now use the instance manager and GetInfo to get MySQL info like API would.
+	 */
 
-//	// Create an instance manager.
-//	mrm := mock.NewMrmsMonitor()
-//	m := instance.NewManager(s.logger, s.configDir, s.api, mrm)
-//	t.Assert(m, NotNil)
+	// Create an instance manager.
+	mrm := mock.NewMrmsMonitor()
+	m := instance.NewManager(s.logger, s.configDir, s.api, mrm)
+	t.Assert(m, NotNil)
 
-//	err := m.Start()
-//	t.Assert(err, IsNil)
+	err := m.Start()
+	t.Assert(err, IsNil)
 
-//	// API sends Cmd[Service:"instance", Cmd:"GetInfo",
-//	//               Data:proto.ServiceInstance[Service:"mysql",
-//	//                                          Data:proto.MySQLInstance[]]]
-//	// Only DSN is needed.  We set Id just to test that it's not changed.
-//	mysqlIt := &proto.MySQLInstance{
-//		Id:  9,
-//		DSN: dsn,
-//	}
-//	mysqlData, err := json.Marshal(mysqlIt)
-//	t.Assert(err, IsNil)
+	// API should send Cmd[Service:"instance", Cmd:"GetInfo",
+	//                     Data:proto.InstanceConfig[]]
+	// Only DSN is needed.  We set Id just to test that it's not changed.
+	mysqlIt := proto.InstanceConfig{}
+	mysqlIt.Type = "MySQL"
+	mysqlIt.Prefix = "mysql"
+	mysqlIt.UUID = "e4b65f107a4caca10e72ac1f1b23e4aa"
+	mysqlIt.Properties = map[string]string{"dsn": dsn}
 
-//	serviceIt := &proto.ServiceInstance{
-//		Service:  "mysql",
-//		Instance: mysqlData,
-//	}
-//	serviceData, err := json.Marshal(serviceIt)
-//	t.Assert(err, IsNil)
+	mysqlData, err := json.Marshal(mysqlIt)
+	t.Assert(err, IsNil)
 
-//	cmd := &proto.Cmd{
-//		Cmd:     "GetInfo",
-//		Service: "instance",
-//		Data:    serviceData,
-//	}
+	cmd := &proto.Cmd{
+		Cmd:  "GetInfo",
+		Data: mysqlData,
+	}
 
-//	reply := m.Handle(cmd)
+	reply := m.Handle(cmd)
 
-//	got := &proto.MySQLInstance{}
-//	err = json.Unmarshal(reply.Data, got)
-//	t.Assert(err, IsNil)
+	fmt.Println(reply)
+	var got *proto.InstanceConfig
+	err = json.Unmarshal(reply.Data, &got)
+	t.Assert(err, IsNil)
 
-//	t.Check(got.Id, Equals, uint(9))        // not changed
-//	t.Check(got.DSN, Equals, mysqlIt.DSN)   // not changed
-//	t.Check(got.Hostname, Equals, hostname) // new
-//	t.Check(got.Distro, Equals, distro)     // new
-//	t.Check(got.Version, Equals, version)   // new
-//}
+	t.Check(got.UUID, Equals, "e4b65f107a4caca10e72ac1f1b23e4aa")     // not changed
+	t.Check(got.Properties["dsn"], Equals, mysqlIt.Properties["dsn"]) // not changed
+	t.Check(got.Properties["hostname"], Equals, hostname)             // new
+	t.Check(got.Properties["distro"], Equals, distro)                 // new
+	t.Check(got.Properties["version"], Equals, version)               // new
+}
 
-//func (s *ManagerTestSuite) TestHandleAdd(t *C) {
-//	// Create an instance manager.
-//	mrm := mock.NewMrmsMonitor()
-//	m := instance.NewManager(s.logger, s.configDir, s.api, mrm)
-//	t.Assert(m, NotNil)
+func (s *ManagerTestSuite) TestHandleAdd(t *C) {
+	// Create an instance manager.
+	mrm := mock.NewMrmsMonitor()
+	m := instance.NewManager(s.logger, s.configDir, s.api, mrm)
+	t.Assert(m, NotNil)
 
-//	mysqlIt := &proto.MySQLInstance{
-//		Id:  9,
-//		DSN: dsn,
-//	}
-//	mysqlData, err := json.Marshal(mysqlIt)
-//	t.Assert(err, IsNil)
+	mysqlIt := proto.InstanceConfig{}
+	mysqlIt.Type = "MySQL"
+	mysqlIt.Prefix = "mysql"
+	mysqlIt.UUID = "e4b65f107a4caca10e72ac1f1b23e4aa"
+	mysqlIt.Properties = map[string]string{"dsn": dsn}
 
-//	serviceIt := &proto.ServiceInstance{
-//		Service:    "mysql",
-//		Instance:   mysqlData,
-//		InstanceId: 2,
-//	}
-//	serviceData, err := json.Marshal(serviceIt)
-//	t.Assert(err, IsNil)
+	mysqlData, err := json.Marshal(mysqlIt)
+	t.Assert(err, IsNil)
 
-//	cmd := &proto.Cmd{
-//		Cmd:     "Add",
-//		Service: "mysql",
-//		Data:    serviceData,
-//	}
+	cmd := &proto.Cmd{
+		Cmd:  "Add",
+		Data: mysqlData,
+	}
 
-//	reply := m.Handle(cmd)
-//	t.Assert(reply.Error, Equals, "")
+	reply := m.Handle(cmd)
+	t.Assert(reply.Error, Equals, "")
 
-//	// Test GetMySQLInstances here beacause we already have a Repo with instances
-//	is := m.GetMySQLInstances()
-//	t.Assert(is, NotNil)
-//	t.Assert(len(is), Equals, 1)
-//	t.Assert(is[0].Id, Equals, uint(9))
-//}
+	// Test GetMySQLInstances here beacause we already have a Repo with instances
+	is := m.GetMySQLInstances()
+	t.Assert(is, NotNil)
+	t.Assert(len(is), Equals, 1)
+	t.Assert(is[0].UUID, Equals, mysqlIt.UUID)
+}

@@ -18,8 +18,9 @@
 package mm
 
 import (
-	"github.com/percona/cloud-protocol/proto"
 	"time"
+
+	"github.com/percona/cloud-protocol/proto"
 )
 
 /**
@@ -42,7 +43,7 @@ type Monitor interface {
 }
 
 type MonitorFactory interface {
-	Make(service string, instanceId uint, data []byte) (Monitor, error)
+	Make(service string, instanceId string, data []byte) (Monitor, error)
 }
 
 var MetricTypes map[string]bool = map[string]bool{

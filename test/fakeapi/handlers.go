@@ -148,10 +148,10 @@ func (f *FakeApi) AppendAgentsUuid(agent *proto.Agent) {
 	})
 }
 
-func (f *FakeApi) AppendNInsts(instances []proto.Instance) {
-	f.Append("/insts", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		data, _ := json.Marshal(instances)
-		w.Write(data)
-	})
-}
+//func (f *FakeApi) AppendNInsts(instances []proto.Instance) {
+//	f.Append("/insts", func(w http.ResponseWriter, r *http.Request) {
+//		w.WriteHeader(http.StatusOK)
+//		data, _ := json.Marshal(instances)
+//		w.Write(data)
+//	})
+//}

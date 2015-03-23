@@ -108,10 +108,10 @@ func (m *Manager) Stop() error {
 	return nil
 }
 
-func onlyMySQLInsts(slice *[]proto.Instance) *[]proto.Instance {
-	justMySQL := make([]proto.Instance, 0)
-	for _, it := range *slice {
-		if isMySQLInst(it) {
+func onlyMySQLInsts(slice []proto.InstanceConfig) *[]proto.InstanceConfig {
+	justMySQL := make([]proto.InstanceConfig, 0)
+	for _, it := range slice {
+		if isMySQLConfig(&it) {
 			justMySQL = append(justMySQL, it)
 		}
 	}
@@ -119,7 +119,7 @@ func onlyMySQLInsts(slice *[]proto.Instance) *[]proto.Instance {
 }
 
 // Adds a MySQL instance to MRM
-func (m *Manager) mrmMySQL(inst *proto.Instance) error {
+func (m *Manager) mrmMySQL(inst *proto.InstanceConfig) error {
 	itDSN, ok := inst.Properties["dns"]
 	if !ok {
 		return errors.New("Missing DSN in added MySQL instance " + inst.UUID)
@@ -144,7 +144,7 @@ func (m *Manager) mrmMySQL(inst *proto.Instance) error {
 }
 
 // Auxiliary function to add MySQL instances on MRM
-func (m *Manager) mrmAddedMySQL(added *[]proto.Instance) {
+func (m *Manager) mrmAddedMySQL(added *[]proto.InstanceConfig) {
 	// Process added instances
 	for _, addIt := range *added {
 		if err := m.mrmMySQL(&addIt); err != nil {
@@ -154,7 +154,7 @@ func (m *Manager) mrmAddedMySQL(added *[]proto.Instance) {
 }
 
 // Auxiliary function to remove deleted MySQL instances from MRM
-func (m *Manager) mrmDeletedMySQL(deleted *[]proto.Instance) {
+func (m *Manager) mrmDeletedMySQL(deleted *[]proto.InstanceConfig) {
 	for _, dltIt := range *deleted {
 		itDSN, ok := dltIt.Properties["dns"]
 		if !ok {
@@ -167,7 +167,7 @@ func (m *Manager) mrmDeletedMySQL(deleted *[]proto.Instance) {
 }
 
 // Auxiliary function to update MySQL instances on MRM
-func (m *Manager) mrmUpdatedMySQL(updated *[]proto.Instance) {
+func (m *Manager) mrmUpdatedMySQL(updated *[]proto.InstanceConfig) {
 	// For now updates means deleting and then adding DSN to MRM
 	m.mrmDeletedMySQL(updated)
 	m.mrmAddedMySQL(updated)
@@ -178,80 +178,64 @@ func (m *Manager) Handle(cmd *proto.Cmd) *proto.Reply {
 	m.status.UpdateRe("instance", "Handling", cmd)
 	defer m.status.Update("instance", "Running")
 
-	var it *proto.Instance = nil
-	if err := json.Unmarshal(cmd.Data, it); err != nil {
+	var it *proto.InstanceConfig = nil
+	if err := json.Unmarshal(cmd.Data, &it); err != nil {
 		return cmd.Reply(nil, err)
 	}
 
 	switch cmd.Cmd {
-	case "Update":
-		added := make([]proto.Instance, 0)
-		deleted := make([]proto.Instance, 0)
-		updated := make([]proto.Instance, 0)
-		err := m.repo.UpdateTree(*it, &added, &deleted, &updated, true) // true = write to disk
+	case "Add":
+		err := m.repo.Add(*it, true) // true = write to disk
 		if err != nil {
 			return cmd.Reply(nil, err)
 		}
-		// For the following block we only care about MySQL instances
-		// From former code logic, we don't actually care about if there was an error removing
-		// the MRM for the DSN. TODO: really?
-		m.mrmAddedMySQL(onlyMySQLInsts(&added))
-		m.mrmDeletedMySQL(onlyMySQLInsts(&deleted))
-		m.mrmUpdatedMySQL(onlyMySQLInsts(&updated))
+		iit, err := m.repo.Get(it.UUID)
+		if err != nil {
+			m.logger.Error(err)
+			return cmd.Reply(nil, nil)
+		}
+		if isMySQLConfig(iit) {
+			dsn, ok := iit.Properties["dsn"]
+			if !ok {
+				m.logger.Warn(fmt.Sprintf("MySQL instance %s has no DSN"), dsn)
+				return cmd.Reply(nil, nil)
+			}
+			ch, err := m.mrm.Add(dsn)
+			if err != nil {
+				m.logger.Error(err)
+				return cmd.Reply(nil, nil)
+			}
+			m.mrmChans[dsn] = ch
+
+			safeDSN := mysql.HideDSNPassword(dsn)
+			m.status.Update("instance", "Getting info "+safeDSN)
+			if err := GetMySQLInfo(iit); err != nil {
+				m.logger.Warn(fmt.Sprintf("Failed to get MySQL info %s: %s", safeDSN, err))
+				return cmd.Reply(nil, nil)
+			}
+
+			m.status.Update("instance", "Updating info "+safeDSN)
+			err = m.pushInstanceInfo(iit)
+			if err != nil {
+				m.logger.Error(err)
+			}
+
+		}
 		return cmd.Reply(nil, nil)
-		//	case "Add":
-		//		err := m.repo.Add(it.Service, it.InstanceId, it.Instance, true) // true = write to disk
-		//		if err != nil {
-		//			return cmd.Reply(nil, err)
-		//		}
-		//		if it.Service == "mysql" {
-		//			// Get the instance as type proto.MySQLInstance instead of proto.ServiceInstance
-		//			// because we need the dsn field
-		//			// We only return errors for repo.Add, not for mrm so all returns within this block
-		//			// will return nil, nil
-		//			iit := &proto.MySQLInstance{}
-		//			err := m.repo.Get(it.Service, it.InstanceId, iit)
-		//			if err != nil {
-		//				m.logger.Error(err)
-		//				return cmd.Reply(nil, nil)
-		//			}
-		//			ch, err := m.mrm.Add(iit.DSN)
-		//			if err != nil {
-		//				m.logger.Error(err)
-		//				return cmd.Reply(nil, nil)
-		//			}
-		//			m.mrmChans[iit.DSN] = ch
+	case "Remove":
+		iit, err := m.repo.Get(it.UUID)
+		// Don't return an error. This is just a remove from mrms
+		if err != nil {
+			m.logger.Error(err)
+		} else if isMySQLConfig(iit) {
+			dns, ok := iit.Properties["dns"]
+			if ok {
+				m.mrm.Remove(dns, m.mrmChans[dns])
+			}
+		}
 
-		//			safeDSN := mysql.HideDSNPassword(iit.DSN)
-		//			m.status.Update("instance", "Getting info "+safeDSN)
-		//			if err := GetMySQLInfo(iit); err != nil {
-		//				m.logger.Warn(fmt.Sprintf("Failed to get MySQL info %s: %s", safeDSN, err))
-		//				return cmd.Reply(nil, nil)
-		//			}
-
-		//			m.status.Update("instance", "Updating info "+safeDSN)
-		//			err = m.pushInstanceInfo(iit)
-		//			if err != nil {
-		//				m.logger.Error(err)
-		//				return cmd.Reply(nil, nil)
-		//			}
-		//		}
-		//		return cmd.Reply(nil, nil)
-		//	case "Remove":
-		//		if it.Service == "mysql" {
-		//			// Get the instance as type proto.MySQLInstance instead of proto.ServiceInstance
-		//			// because we need the dsn field
-		//			iit := &proto.MySQLInstance{}
-		//			err := m.repo.Get(it.Service, it.InstanceId, iit)
-		//			// Don't return an error. This is just a remove from mrms
-		//			if err != nil {
-		//				m.logger.Error(err)
-		//			} else {
-		//				m.mrm.Remove(iit.DSN, m.mrmChans[iit.DSN])
-		//			}
-		//		}
-		//		err := m.repo.Remove(it.Service, it.InstanceId)
-		//		return cmd.Reply(nil, err)
+		err = m.repo.Remove(iit.UUID)
+		return cmd.Reply(nil, err)
 	case "GetInfo":
 		err := m.handleGetInfo(it)
 		return cmd.Reply(it, err)
@@ -282,14 +266,14 @@ func (m *Manager) Repo() *Repo {
 // Implementation
 /////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) handleGetInfo(it *proto.Instance) error {
-	if !isMySQLInst(*it) {
+func (m *Manager) handleGetInfo(it *proto.InstanceConfig) error {
+	if !isMySQLConfig(it) {
 		return fmt.Errorf("Don't know how to get info for %s instance", it.UUID)
 	}
 	return GetMySQLInfo(it)
 }
 
-func GetMySQLInfo(it *proto.Instance) error {
+func GetMySQLInfo(it *proto.InstanceConfig) error {
 	conn := mysql.NewConnection(it.Properties["dsn"])
 	if err := conn.Connect(1); err != nil {
 		return err
@@ -299,42 +283,25 @@ func GetMySQLInfo(it *proto.Instance) error {
 		" CONCAT_WS('.', @@hostname, IF(@@port='3306',NULL,@@port)) AS Hostname," +
 		" @@version_comment AS Distro," +
 		" @@version AS Version"
+	var hostname, distro, version *string
 	err := conn.DB().QueryRow(sql).Scan(
-		it.Properties["hostname"],
-		it.Properties["distro"],
-		it.Properties["version"],
-	)
+		&hostname,
+		&distro,
+		&version)
 	if err != nil {
 		return err
 	}
+	it.Properties["hostname"] = *hostname
+	it.Properties["distro"] = *distro
+	it.Properties["version"] = *version
 	return nil
 }
 
-func (m *Manager) GetMySQLInstances() []proto.Instance {
+func (m *Manager) GetMySQLInstances() []proto.InstanceConfig {
 	m.logger.Debug("getMySQLInstances:call")
 	defer m.logger.Debug("getMySQLInstances:return")
 	list := m.Repo().List()
-	return *onlyMySQLInsts(&list)
-	//		parts := strings.Split(name, "-") // mysql-1 or server-12
-	//		if len(parts) != 2 {
-	//			m.logger.Error("Invalid instance name: %s: expected 2 parts, got %d", name, len(parts))
-	//			continue
-	//		}
-	//		if parts[0] == "mysql" {
-	//			id, err := strconv.ParseInt(parts[1], 10, 64)
-	//			if err != nil {
-	//				m.logger.Error("Invalid instance ID: %s: %s", name, err)
-	//				continue
-	//			}
-	//			it := &proto.MySQLInstance{}
-	//			if err := m.Repo().Get(parts[0], uint(id), it); err != nil {
-	//				m.logger.Error("Failed to get instance %s: %s", name, err)
-	//				continue
-	//			}
-	//			instances = append(instances, it)
-	//		}
-	//	}
-	//return instances
+	return *onlyMySQLInsts(list)
 }
 
 func (m *Manager) monitorInstancesRestart(ch chan string) {
@@ -385,7 +352,7 @@ func (m *Manager) monitorInstancesRestart(ch chan string) {
 	}
 }
 
-func (m *Manager) pushInstanceInfo(instance *proto.Instance) error {
+func (m *Manager) pushInstanceInfo(instance *proto.InstanceConfig) error {
 
 	uri := fmt.Sprintf("%s/%s", m.api.EntryLink("insts"), instance.UUID)
 	data, err := json.Marshal(instance)
