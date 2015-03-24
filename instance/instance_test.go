@@ -316,7 +316,6 @@ func (s *ManagerTestSuite) TestHandleGetInfoMySQL(t *C) {
 
 	reply := m.Handle(cmd)
 
-	fmt.Println(reply)
 	var got *proto.InstanceConfig
 	err = json.Unmarshal(reply.Data, &got)
 	t.Assert(err, IsNil)
