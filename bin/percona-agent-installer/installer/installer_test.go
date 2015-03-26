@@ -18,9 +18,13 @@
 package installer_test
 
 import (
+	"fmt"
+	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/agent"
+	"github.com/percona/percona-agent/bin/percona-agent-installer/api"
 	"github.com/percona/percona-agent/bin/percona-agent-installer/installer"
 	"github.com/percona/percona-agent/bin/percona-agent-installer/term"
+	"github.com/percona/percona-agent/instance"
 	"github.com/percona/percona-agent/pct"
 	"github.com/percona/percona-agent/test/mock"
 	. "gopkg.in/check.v1"
@@ -35,34 +39,31 @@ type InstallerTestSuite struct{}
 var _ = Suite(&InstallerTestSuite{})
 
 func (i *InstallerTestSuite) TestIsSupportedMySQLVersion(t *C) {
+	var got bool
+	var err error
+
 	agentConfig := &agent.Config{}
 	flags := installer.Flags{}
 
-	inst := installer.NewInstaller(term.NewTerminal(os.Stdin, false, true), "", pct.NewAPI(), agentConfig, flags)
+	apiConnector := pct.NewAPI()
+	api := api.New(apiConnector, false)
+	logChan := make(chan *proto.LogEntry, 100)
+	logger := pct.NewLogger(logChan, "instance-repo")
+	instanceRepo := instance.NewRepo(logger, pct.Basedir.Dir("config"), apiConnector)
+	terminal := term.NewTerminal(os.Stdin, false, true)
+	inst := installer.NewInstaller(terminal, "", api, instanceRepo, agentConfig, flags)
 	conn := mock.NewNullMySQL()
+	errSomethingWentWrong := fmt.Errorf("Something went wrong")
 
-	conn.SetGlobalVarString("version", "5.0") // Mockup MySQL version
-	got, err := inst.IsVersionSupported(conn)
-	t.Assert(err, IsNil)
-	t.Assert(got, Equals, false) // Agent doesn't support MySQL 5.0
-
-	conn.SetGlobalVarString("version", "ubuntu-something") // Malformed version
+	conn.SetAtLeastVersion(false, errSomethingWentWrong)
 	got, err = inst.IsVersionSupported(conn)
-	t.Assert(err, NotNil)
+	t.Assert(conn.Version, Equals, agent.MIN_SUPPORTED_MYSQL_VERSION)
+	t.Assert(err, Equals, errSomethingWentWrong)
 	t.Assert(got, Equals, false)
 
-	conn.SetGlobalVarString("version", "5.0.1-ubuntu-something")
+	conn.SetAtLeastVersion(true, nil)
 	got, err = inst.IsVersionSupported(conn)
-	t.Assert(err, IsNil)
-	t.Assert(got, Equals, false)
-
-	conn.SetGlobalVarString("version", "5.1.0-ubuntu-something")
-	got, err = inst.IsVersionSupported(conn)
-	t.Assert(err, IsNil)
-	t.Assert(got, Equals, true)
-
-	conn.SetGlobalVarString("version", "10.1.0-MariaDB")
-	got, err = inst.IsVersionSupported(conn)
+	t.Assert(conn.Version, Equals, agent.MIN_SUPPORTED_MYSQL_VERSION)
 	t.Assert(err, IsNil)
 	t.Assert(got, Equals, true)
 

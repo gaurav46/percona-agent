@@ -36,7 +36,6 @@ import (
 // An AnalyzerInstnace is an Analyzer ran by a Manager, one per MySQL instance
 // as configured.
 type AnalyzerInstance struct {
-	config      Config
 	mysqlConn   mysql.Connector
 	restartChan <-chan bool
 	tickChan    chan time.Time
@@ -54,7 +53,7 @@ type Manager struct {
 	// --
 	mux       *sync.RWMutex
 	running   bool
-	analyzers map[uint]AnalyzerInstance
+	analyzers map[string]AnalyzerInstance
 	status    *pct.Status
 }
 
@@ -75,7 +74,7 @@ func NewManager(
 		analyzerFactory: analyzerFactory,
 		// --
 		mux:       &sync.RWMutex{},
-		analyzers: make(map[uint]AnalyzerInstance),
+		analyzers: make(map[string]AnalyzerInstance),
 		status:    pct.NewStatus([]string{"qan"}),
 	}
 	return m
@@ -96,7 +95,7 @@ func (m *Manager) Start() error {
 		return pct.ServiceIsRunningError{Service: "qan"}
 	}
 
-	// Mangaer ("qan" in status) runs indepdent from qan-parser.
+	// Manager ("qan" in status) runs independent from qan-parser.
 	m.status.Update("qan", "Starting")
 	defer func() {
 		m.running = true
@@ -118,7 +117,7 @@ func (m *Manager) Start() error {
 
 	// Start the slow log or perf schema analyzer. If it fails that's ok for
 	// the qan manager itself (i.e. don't fail this func) because user can fix
-	// or reconfigure this analyzer instannce later and have qan manager try
+	// or reconfigure this analyzer instance later and have qan manager try
 	// again to start it.
 	// todo: this fails if agent starts before MySQL is running because MRMS
 	//       fails to connect to MySQL in mrms/monitor/instance.NewMysqlInstance();
@@ -227,7 +226,7 @@ func (m *Manager) GetConfig() ([]proto.AgentConfig, []error) {
 	// Configs are always returned as array of AgentConfig resources.
 	configs := []proto.AgentConfig{}
 	for _, a := range m.analyzers {
-		bytes, err := json.Marshal(a.config)
+		bytes, err := json.Marshal(a.analyzer.Config())
 		if err != nil {
 			m.logger.Warn(err)
 			continue
@@ -298,15 +297,15 @@ func (m *Manager) startAnalyzer(config Config) error {
 	// Check if an analyzer for this MySQL instance already exists.
 	if a, ok := m.analyzers[config.InstanceId]; ok {
 		return pct.ServiceIsRunningError{Service: a.analyzer.String()}
-
 	}
 
 	// Get the MySQL DSN and create a MySQL connection.
-	mysqlInstance := proto.MySQLInstance{}
-	if err := m.im.Get(config.Service, config.InstanceId, &mysqlInstance); err != nil {
+	// TODO: FIX THIS THIS WAS CHANGED FOR INSTANCE REFACTOR
+	mysqlInstance, err := m.im.Get(config.InstanceId)
+	if err != nil {
 		return fmt.Errorf("Cannot get MySQL instance from repo: %s", err)
 	}
-	mysqlConn := m.mysqlFactory.Make(mysqlInstance.DSN)
+	mysqlConn := m.mysqlFactory.Make(mysqlInstance.Properties["dsn"])
 
 	// Add the MySQL DSN to the MySQL restart monitor. If MySQL restarts,
 	// the analyzer will stop its worker and re-configure MySQL.
@@ -336,7 +335,6 @@ func (m *Manager) startAnalyzer(config Config) error {
 
 	// Save the new analyzer and its associated parts.
 	m.analyzers[config.InstanceId] = AnalyzerInstance{
-		config:      config,
 		mysqlConn:   mysqlConn,
 		restartChan: restartChan,
 		tickChan:    tickChan,
@@ -346,7 +344,7 @@ func (m *Manager) startAnalyzer(config Config) error {
 	return nil // success
 }
 
-func (m *Manager) stopAnalyzer(instanceId uint) error {
+func (m *Manager) stopAnalyzer(instanceId string) error {
 	/*
 		XXX Assume caller has locked m.mux.
 	*/

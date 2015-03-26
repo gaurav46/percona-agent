@@ -30,6 +30,8 @@ import (
 	"github.com/percona/percona-agent/ticker"
 )
 
+const MIN_SLOWLOG_ROTATION_SIZE = 4096
+
 // A Worker gets queries, aggregates them, and returns a Result. Workers are ran
 // by Analyzers. When ran, MySQL is presumed to be configured and ready.
 type Worker interface {
@@ -50,6 +52,8 @@ type Analyzer interface {
 	Stop() error
 	Status() map[string]string
 	String() string
+	Config() Config
+	SetConfig(Config)
 }
 
 // An AnalyzerFactory makes an Analyzer, real or mock.
@@ -144,7 +148,40 @@ func (a *RealAnalyzer) Status() map[string]string {
 	return a.status.Merge(a.worker.Status())
 }
 
+func (a *RealAnalyzer) Config() Config {
+	return a.config
+}
+
+func (a *RealAnalyzer) SetConfig(config Config) {
+	a.config = config
+}
+
 // --------------------------------------------------------------------------
+
+// Disable Percona Server slow log rotation and handle internally using the max_slowlog_size value.
+// The slow log worker must rotate slow logs by itself to ensure full and proper parsing across rotations.
+func (a *RealAnalyzer) TakeOverPerconaServerRotation() error {
+	maxSlowLogSize := int64(a.mysqlConn.GetGlobalVarNumber("max_slowlog_size"))
+	if maxSlowLogSize == 0 {
+		return nil
+	}
+	// Slowlog rotation will only be activated if max_slowlog_size >= 4096. PS doc is not very clear, testing confirmed this.
+	// http://www.percona.com/doc/percona-server/5.6/flexibility/slowlog_rotation.html
+	if maxSlowLogSize >= MIN_SLOWLOG_ROTATION_SIZE {
+		a.logger.Info("Taking over Percona Server slow log rotation, max_slowlog_size:", maxSlowLogSize)
+		a.config.MaxSlowLogSize = maxSlowLogSize
+
+		// Using Set makes testing easier
+		disablePSrotation := []mysql.Query{
+			mysql.Query{Set: "SET GLOBAL max_slowlog_size = 0"},
+		}
+
+		if err := a.mysqlConn.Set(disablePSrotation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (a *RealAnalyzer) configureMySQL(config []mysql.Query, tryLimit int) {
 	a.logger.Debug("configureMySQL:call")
@@ -176,6 +213,11 @@ func (a *RealAnalyzer) configureMySQL(config []mysql.Query, tryLimit int) {
 		defer a.mysqlConn.Close()
 
 		a.logger.Debug("configureMySQL:configuring")
+		// Try to take over Percona Server slow log rotation
+		if err := a.TakeOverPerconaServerRotation(); err != nil {
+			a.logger.Warn("Cannot takeover slowlog rotation from Percona Server:", err)
+			continue
+		}
 		if err := a.mysqlConn.Set(config); err != nil {
 			a.mysqlConn.Close()
 			a.logger.Warn("Cannot configure MySQL:", err)

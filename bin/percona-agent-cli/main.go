@@ -315,7 +315,7 @@ func (cli *Cli) info(args []string) {
 				return
 			}
 			si := &proto.ServiceInstance{
-				Service: "mysql",
+				Service:  "mysql",
 				Instance: bytes,
 			}
 			bytes, err = json.Marshal(si)
@@ -334,7 +334,7 @@ func (cli *Cli) info(args []string) {
 				return
 			}
 			si := &proto.ServiceInstance{
-				Service: "server",
+				Service:  "server",
 				Instance: bytes,
 			}
 			bytes, err = json.Marshal(si)

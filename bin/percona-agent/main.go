@@ -80,7 +80,11 @@ func init() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	// Below condition should allow people to use higher number of threads if they want to
+	if os.Getenv("GOMAXPROCS") == "" {
+		// "1" is currently default in golang but this may change in the future, so let's lock this
+		runtime.GOMAXPROCS(1)
+	}
 }
 
 func run() error {
@@ -411,9 +415,11 @@ func run() error {
 	// Set the global pct/cmd.Factory, used for the Restart cmd.
 	pctCmd.Factory = &pctCmd.RealCmdFactory{}
 
+	agentLogger := pct.NewLogger(logChan, "agent")
+
 	agent := agent.NewAgent(
 		agentConfig,
-		pct.NewLogger(logChan, "agent"),
+		agentLogger,
 		api,
 		cmdClient,
 		services,
@@ -428,8 +434,8 @@ func run() error {
 		defer func() {
 			if err := recover(); err != nil {
 				errMsg := fmt.Sprintf("Agent crashed: %s", err)
-				logger := pct.NewLogger(logChan, "agent")
-				logger.Error(errMsg)
+				golog.Println(errMsg)
+				agentLogger.Error(errMsg)
 				stopChan <- fmt.Errorf("%s", errMsg)
 			}
 		}()
@@ -446,6 +452,7 @@ func run() error {
 		select {
 		case stopErr = <-stopChan: // agent or signal
 			golog.Println("Agent stopped, shutting down...")
+			agentLogger.Info("Agent stopped")
 			agentRunning = false
 		case <-statusSigChan:
 			status := agent.AllStatus()

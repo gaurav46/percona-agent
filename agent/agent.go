@@ -129,7 +129,7 @@ func (agent *Agent) Run() error {
 	// https://jira.percona.com/browse/PCT-765
 	agent.keepalive = time.NewTicker(time.Duration(agent.config.Keepalive) * time.Second)
 
-	logger.Info("Started")
+	logger.Info("Started version: " + VERSION)
 
 	for {
 		logger.Debug("idle")

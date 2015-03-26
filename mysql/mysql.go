@@ -25,8 +25,10 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/hashicorp/go-version"
 	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/pct"
+	"regexp"
 )
 
 type Query struct {
@@ -43,7 +45,9 @@ type Connector interface {
 	Explain(q string, db string) (explain *proto.ExplainResult, err error)
 	Set([]Query) error
 	GetGlobalVarString(varName string) string
+	GetGlobalVarNumber(varName string) float64
 	Uptime() (uptime int64, err error)
+	AtLeastVersion(v string) (bool, error)
 }
 
 type Connection struct {
@@ -201,6 +205,31 @@ func (c *Connection) GetGlobalVarNumber(varName string) float64 {
 	return varValue
 }
 
+func (c *Connection) AtLeastVersion(v string) (bool, error) {
+	mysqlVersion := c.GetGlobalVarString("version") // Version in the form m.n.o-ubuntu
+	return AtLeastVersion(mysqlVersion, v)
+}
+
+// Check if version v2 is equal or higher than v1 (v2 >= v1)
+// v2 can be in form m.n.o-ubuntu
+func AtLeastVersion(v1, v2 string) (bool, error) {
+	re := regexp.MustCompile("-.*$")
+	v1 = re.ReplaceAllString(v1, "") // Strip everything after the first dash
+
+	v, err := version.NewVersion(v1)
+	if err != nil {
+		return false, err
+	}
+	constraints, err := version.NewConstraint(">= " + v2)
+	if err != nil {
+		return false, err
+	}
+	if constraints.Check(v) {
+		return true, nil
+	}
+	return false, nil
+}
+
 func (c *Connection) Uptime() (uptime int64, err error) {
 	if c.conn == nil {
 		return 0, fmt.Errorf("Error while getting Uptime(). Not connected to the db: %s", c.DSN())
@@ -277,13 +306,18 @@ func (c *Connection) classicExplain(tx *sql.Tx, query string) (classicExplain []
 
 func (c *Connection) jsonExplain(tx *sql.Tx, query string) (jsonExplain string, err error) {
 	// EXPLAIN in JSON format is introduced since MySQL 5.6.5
-	err = tx.QueryRow(fmt.Sprintf("/*!50605 EXPLAIN FORMAT=JSON %s*/", query)).Scan(&jsonExplain)
-	switch err {
-	case nil:
-		return jsonExplain, nil // json format supported
-	case sql.ErrNoRows:
-		return "", nil // json format unsupported
+	jsonFormatSupported, err := c.AtLeastVersion("5.6.5")
+	if err != nil {
+		return "", err
+	}
+	if !jsonFormatSupported {
+		return "", nil
 	}
 
-	return "", err // failure
+	err = tx.QueryRow(fmt.Sprintf("EXPLAIN FORMAT=JSON %s", query)).Scan(&jsonExplain)
+	if err != nil {
+		return "", err
+	}
+
+	return jsonExplain, nil
 }

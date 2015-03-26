@@ -19,10 +19,11 @@ package test
 
 import (
 	"fmt"
-	"gopkg.in/check.v1"
 	"os/exec"
 	"reflect"
 	"strings"
+
+	"gopkg.in/check.v1"
 )
 
 /////////////////////////////////////////////////////////////////////////////
@@ -73,7 +74,7 @@ func IsDeeply(got, expect interface{}) (result bool, error string) {
 }
 
 func deepEquals(got reflect.Value, expect reflect.Value, level uint) (bool, string) {
-	if level > 10 {
+	if level > 100 {
 		return false, "deepEquals() recursion too deep"
 	}
 

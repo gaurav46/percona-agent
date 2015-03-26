@@ -31,16 +31,16 @@ var (
 )
 
 type Terminal struct {
-	stdin *bufio.Reader
+	stdin       *bufio.Reader
 	interactive bool
-	debug bool
+	debug       bool
 }
 
 func NewTerminal(stdin io.Reader, interactive, debug bool) *Terminal {
 	t := &Terminal{
-		stdin: bufio.NewReader(stdin),
+		stdin:       bufio.NewReader(stdin),
 		interactive: interactive,
-		debug: debug,
+		debug:       debug,
 	}
 	return t
 }

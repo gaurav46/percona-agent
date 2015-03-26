@@ -74,8 +74,7 @@ func (s *MysqlTestSuite) TestDSNString(t *C) {
 		Username: "root",
 	}
 	got := fmt.Sprintf("%s", dsn)
-	t.Log(got) // only printed if teset fails:
-	t.Check(strings.HasPrefix(got, "root:<password-hidden>@unix"), Equals, true)
+	t.Check(strings.HasPrefix(got, "root:<password-hidden>@unix"), Equals, true, Commentf("Obtained DSN: %s", got))
 }
 
 func (s *MysqlTestSuite) TestMissingSocketError(t *C) {
@@ -109,4 +108,31 @@ func (s *MysqlTestSuite) TestErrorFormatting(t *C) {
 		Err:  fmt.Errorf("connection refused"),
 	}
 	t.Check(mysql.FormatError(e1), Equals, "connection refused: 127.0.0.1:3306")
+}
+
+func (s *MysqlTestSuite) TestIsSupportedMySQLVersion(t *C) {
+	var got bool
+	var err error
+
+	v := "5.1"
+
+	got, err = mysql.AtLeastVersion("5.0", v)
+	t.Assert(err, IsNil)
+	t.Assert(got, Equals, false)
+
+	got, err = mysql.AtLeastVersion("ubuntu-something", v)
+	t.Assert(err, NotNil)
+	t.Assert(got, Equals, false)
+
+	got, err = mysql.AtLeastVersion("5.0.1-ubuntu-something", v)
+	t.Assert(err, IsNil)
+	t.Assert(got, Equals, false)
+
+	got, err = mysql.AtLeastVersion("5.1.0-ubuntu-something", v)
+	t.Assert(err, IsNil)
+	t.Assert(got, Equals, true)
+
+	got, err = mysql.AtLeastVersion("10.1.0-MariaDB", v)
+	t.Assert(err, IsNil)
+	t.Assert(got, Equals, true)
 }

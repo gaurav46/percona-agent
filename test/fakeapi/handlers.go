@@ -20,8 +20,36 @@ package fakeapi
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/percona/cloud-protocol/proto"
+	"io/ioutil"
 	"net/http"
+
+	"github.com/percona/cloud-protocol/proto"
+	"github.com/percona/percona-agent/mm"
+	"github.com/percona/percona-agent/mm/mysql"
+	"github.com/percona/percona-agent/mm/system"
+	"github.com/percona/percona-agent/sysconfig"
+	sysconfigMysql "github.com/percona/percona-agent/sysconfig/mysql"
+)
+
+var (
+	ConfigMmDefaultMysql = mysql.Config{
+		Config: mm.Config{
+			Collect: 1,
+			Report:  60,
+		},
+		UserStats: false,
+	}
+	ConfigMmDefaultServer = system.Config{
+		Config: mm.Config{
+			Collect: 1,
+			Report:  60,
+		},
+	}
+	ConfigSysconfigDefaultMysql = sysconfigMysql.Config{
+		Config: sysconfig.Config{
+			Report: 3600,
+		},
+	}
 )
 
 func (f *FakeApi) AppendPing() {
@@ -35,27 +63,45 @@ func (f *FakeApi) AppendPing() {
 	})
 }
 
-func (f *FakeApi) AppendInstancesServer(serverInstance *proto.ServerInstance) {
+func (f *FakeApi) AppendInstancesServer(id uint, serverInstance *proto.ServerInstance) {
 	f.Append("/instances/server", func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			panic(err)
+		}
+		err = json.Unmarshal(body, serverInstance)
+		if err != nil {
+			panic(err)
+		}
+		serverInstance.Id = id
 		w.Header().Set("Location", fmt.Sprintf("%s/instances/server/%d", f.URL(), serverInstance.Id))
 		w.WriteHeader(http.StatusCreated)
 	})
 }
-func (f *FakeApi) AppendInstancesServerId(serverInstance *proto.ServerInstance) {
-	f.Append(fmt.Sprintf("/instances/server/%d", serverInstance.Id), func(w http.ResponseWriter, r *http.Request) {
+func (f *FakeApi) AppendInstancesServerId(id uint, serverInstance *proto.ServerInstance) {
+	f.Append(fmt.Sprintf("/instances/server/%d", id), func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		data, _ := json.Marshal(&serverInstance)
 		w.Write(data)
 	})
 }
-func (f *FakeApi) AppendInstancesMysql(mysqlInstance *proto.MySQLInstance) {
+func (f *FakeApi) AppendInstancesMysql(id uint, mysqlInstance *proto.MySQLInstance) {
 	f.Append("/instances/mysql", func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			panic(err)
+		}
+		err = json.Unmarshal(body, mysqlInstance)
+		if err != nil {
+			panic(err)
+		}
+		mysqlInstance.Id = id
 		w.Header().Set("Location", fmt.Sprintf("%s/instances/mysql/%d", f.URL(), mysqlInstance.Id))
 		w.WriteHeader(http.StatusCreated)
 	})
 }
-func (f *FakeApi) AppendInstancesMysqlId(mysqlInstance *proto.MySQLInstance) {
-	f.Append(fmt.Sprintf("/instances/mysql/%d", mysqlInstance.Id), func(w http.ResponseWriter, r *http.Request) {
+func (f *FakeApi) AppendInstancesMysqlId(id uint, mysqlInstance *proto.MySQLInstance) {
+	f.Append(fmt.Sprintf("/instances/mysql/%d", id), func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		data, _ := json.Marshal(&mysqlInstance)
 		w.Write(data)
@@ -64,19 +110,22 @@ func (f *FakeApi) AppendInstancesMysqlId(mysqlInstance *proto.MySQLInstance) {
 func (f *FakeApi) AppendConfigsMmDefaultServer() {
 	f.Append("/configs/mm/default-server", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{ "Service": "server", "InstanceId": 0, "Collect": 10, "Report": 60 }`))
+		data, _ := json.Marshal(&ConfigMmDefaultServer)
+		w.Write(data)
 	})
 }
 func (f *FakeApi) AppendConfigsMmDefaultMysql() {
 	f.Append("/configs/mm/default-mysql", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{ "Service": "mysql", "InstanceId": 0, "Collect": 1, "Report": 60, "Status": {}, "UserStats": false }`))
+		data, _ := json.Marshal(&ConfigMmDefaultMysql)
+		w.Write(data)
 	})
 }
 func (f *FakeApi) AppendSysconfigDefaultMysql() {
 	f.Append("/configs/sysconfig/default-mysql", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{ "Service": "mysql", "InstanceId": 0, "Report": 3600 }`))
+		data, _ := json.Marshal(&ConfigSysconfigDefaultMysql)
+		w.Write(data)
 	})
 }
 func (f *FakeApi) AppendConfigsQanDefault() {
@@ -98,3 +147,11 @@ func (f *FakeApi) AppendAgentsUuid(agent *proto.Agent) {
 		w.Write(data)
 	})
 }
+
+//func (f *FakeApi) AppendNInsts(instances []proto.Instance) {
+//	f.Append("/insts", func(w http.ResponseWriter, r *http.Request) {
+//		w.WriteHeader(http.StatusOK)
+//		data, _ := json.Marshal(instances)
+//		w.Write(data)
+//	})
+//}

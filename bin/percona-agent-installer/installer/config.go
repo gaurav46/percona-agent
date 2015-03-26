@@ -22,173 +22,19 @@ import (
 	"fmt"
 	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/data"
-	"github.com/percona/percona-agent/instance"
 	pctLog "github.com/percona/percona-agent/log"
-	mmMySQL "github.com/percona/percona-agent/mm/mysql"
-	mmServer "github.com/percona/percona-agent/mm/system"
 	"github.com/percona/percona-agent/pct"
-	"github.com/percona/percona-agent/qan"
-	sysconfigMySQL "github.com/percona/percona-agent/sysconfig/mysql"
-	"log"
-	"net/http"
 )
-
-func (i *Installer) getMmServerConfig(si *proto.ServerInstance) (*proto.AgentConfig, error) {
-	url := pct.URL(i.agentConfig.ApiHostname, "/configs/mm/default-server")
-	code, data, err := i.api.Get(i.agentConfig.ApiKey, url)
-	if i.flags.Bool["debug"] {
-		log.Printf("code=%d\n", code)
-		log.Printf("err=%s\n", err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("Failed to get default server monitor config (%s, status %d)", url, code)
-	}
-	config := &mmServer.Config{}
-	if err := json.Unmarshal(data, config); err != nil {
-		return nil, err
-	}
-	config.Service = "server"
-	config.InstanceId = si.Id
-
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	agentConfig := &proto.AgentConfig{
-		InternalService: "mm",
-		ExternalService: proto.ServiceInstance{
-			Service:    "server",
-			InstanceId: si.Id,
-		},
-		Config:  string(bytes),
-		Running: true,
-	}
-	return agentConfig, nil
-}
-
-func (i *Installer) getMmMySQLConfig(mi *proto.MySQLInstance) (*proto.AgentConfig, error) {
-	url := pct.URL(i.agentConfig.ApiHostname, "/configs/mm/default-mysql")
-	code, data, err := i.api.Get(i.agentConfig.ApiKey, url)
-	if i.flags.Bool["debug"] {
-		log.Printf("code=%d\n", code)
-		log.Printf("err=%s\n", err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("Failed to get default MySQL monitor config (%s, status %d)", url, code)
-	}
-	config := &mmMySQL.Config{}
-	if err := json.Unmarshal(data, config); err != nil {
-		return nil, err
-	}
-	config.Service = "mysql"
-	config.InstanceId = mi.Id
-
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	agentConfig := &proto.AgentConfig{
-		InternalService: "mm",
-		ExternalService: proto.ServiceInstance{
-			Service:    "mysql",
-			InstanceId: mi.Id,
-		},
-		Config:  string(bytes),
-		Running: true,
-	}
-	return agentConfig, nil
-}
-
-func (i *Installer) getSysconfigMySQLConfig(mi *proto.MySQLInstance) (*proto.AgentConfig, error) {
-	url := pct.URL(i.agentConfig.ApiHostname, "/configs/sysconfig/default-mysql")
-	code, data, err := i.api.Get(i.agentConfig.ApiKey, url)
-	if i.flags.Bool["debug"] {
-		log.Printf("code=%d\n", code)
-		log.Printf("err=%s\n", err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("Failed to get default MySQL sysconfig config (%s, status %d)", url, code)
-	}
-	config := &sysconfigMySQL.Config{}
-	if err := json.Unmarshal(data, config); err != nil {
-		return nil, err
-	}
-	config.Service = "mysql"
-	config.InstanceId = mi.Id
-
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	agentConfig := &proto.AgentConfig{
-		InternalService: "sysconfig",
-		ExternalService: proto.ServiceInstance{
-			Service:    "mysql",
-			InstanceId: mi.Id,
-		},
-		Config:  string(bytes),
-		Running: true,
-	}
-	return agentConfig, nil
-}
-
-func (i *Installer) getQanConfig(mi *proto.MySQLInstance) (*proto.AgentConfig, error) {
-	url := pct.URL(i.agentConfig.ApiHostname, "/configs/qan/default")
-	code, data, err := i.api.Get(i.agentConfig.ApiKey, url)
-	if i.flags.Bool["debug"] {
-		log.Printf("code=%d\n", code)
-		log.Printf("err=%s\n", err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("Failed to get default Query Analytics config (%s, status %d)", url, code)
-	}
-	config := &qan.Config{}
-	if err := json.Unmarshal(data, config); err != nil {
-		return nil, err
-	}
-	config.Service = "mysql"
-	config.InstanceId = mi.Id
-
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	agentConfig := &proto.AgentConfig{
-		InternalService: "qan",
-		ExternalService: proto.ServiceInstance{
-			Service:    "mysql",
-			InstanceId: mi.Id,
-		},
-		Config:  string(bytes),
-		Running: true,
-	}
-	return agentConfig, nil
-}
 
 func (i *Installer) writeInstances(si *proto.ServerInstance, mi *proto.MySQLInstance) error {
 	// We could write the instance structs directly, but this is the job of an
 	// instance repo and it's easy enough to create one, so do the right thing.
-	logChan := make(chan *proto.LogEntry, 100)
-	logger := pct.NewLogger(logChan, "instance-repo")
-	repo := instance.NewRepo(logger, pct.Basedir.Dir("config"), i.api)
 	if si != nil {
 		bytes, err := json.Marshal(si)
 		if err != nil {
 			return err
 		}
-		if err := repo.Add("server", si.Id, bytes, true); err != nil {
+		if err := i.instanceRepo.Add("server", si.Id, bytes, true); err != nil {
 			return err
 		}
 	}
@@ -197,47 +43,73 @@ func (i *Installer) writeInstances(si *proto.ServerInstance, mi *proto.MySQLInst
 		if err != nil {
 			return err
 		}
-		if err := repo.Add("mysql", mi.Id, bytes, true); err != nil {
+		if err := i.instanceRepo.Add("mysql", mi.Id, bytes, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (i *Installer) writeConfigs(agentRes *proto.Agent, configs []proto.AgentConfig) error {
-	// A little confusing but agent.Config != proto.Agent != proto.AgentConfig.
-	// agent.Config is what we need because this is the main config file.
-	i.agentConfig.AgentUuid = agentRes.Uuid
-	i.agentConfig.Links = agentRes.Links
-	if err := pct.Basedir.WriteConfig("agent", i.agentConfig); err != nil {
-		return err
-	}
-
-	logConfig := pctLog.Config{
-		File:  pctLog.DEFAULT_LOG_FILE,
-		Level: pctLog.DEFAULT_LOG_LEVEL,
-	}
-	if err := pct.Basedir.WriteConfig("log", logConfig); err != nil {
-		return err
-	}
-
-	dataConfig := data.Config{
-		Encoding:     data.DEFAULT_DATA_ENCODING,
-		SendInterval: data.DEFAULT_DATA_SEND_INTERVAL,
-	}
-	if err := pct.Basedir.WriteConfig("data", dataConfig); err != nil {
-		return err
-	}
-
+func (i *Installer) writeConfigs(configs []proto.AgentConfig) error {
 	for _, config := range configs {
 		name := config.InternalService
-		if name != "qan" {
+		switch name {
+		case "agent", "log", "data", "qan":
+		default:
 			name += fmt.Sprintf("-%s-%d", config.ExternalService.Service, config.ExternalService.InstanceId)
 		}
+
 		if err := pct.Basedir.WriteConfigString(name, config.Config); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func (i *Installer) getLogConfig() (*proto.AgentConfig, error) {
+	config := pctLog.Config{
+		File:  pctLog.DEFAULT_LOG_FILE,
+		Level: pctLog.DEFAULT_LOG_LEVEL,
+	}
+	configJson, err := json.Marshal(&config)
+	if err != nil {
+		return nil, err
+	}
+	agentConfig := &proto.AgentConfig{
+		InternalService: "log",
+		Config:          string(configJson),
+	}
+
+	return agentConfig, nil
+}
+
+func (i *Installer) getDataConfig() (*proto.AgentConfig, error) {
+	config := data.Config{
+		Encoding:     data.DEFAULT_DATA_ENCODING,
+		SendInterval: data.DEFAULT_DATA_SEND_INTERVAL,
+	}
+	configJson, err := json.Marshal(&config)
+	if err != nil {
+		return nil, err
+	}
+	agentConfig := &proto.AgentConfig{
+		InternalService: "data",
+		Config:          string(configJson),
+	}
+
+	return agentConfig, nil
+}
+
+func (i *Installer) getAgentConfig() (*proto.AgentConfig, error) {
+	configJson, err := json.Marshal(i.agentConfig)
+	if err != nil {
+		return nil, err
+	}
+	agentConfig := &proto.AgentConfig{
+		InternalService: "agent",
+		Config:          string(configJson),
+	}
+
+	return agentConfig, nil
 }

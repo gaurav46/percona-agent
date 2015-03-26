@@ -21,16 +21,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/percona/cloud-protocol/proto"
-	"github.com/percona/percona-agent/pct"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strconv"
+	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/percona/cloud-protocol/proto"
+	"github.com/percona/percona-agent/pct"
 )
 
 type Repo struct {
@@ -38,7 +37,7 @@ type Repo struct {
 	configDir string
 	api       pct.APIConnector
 	// --
-	it  map[string]interface{}
+	it  map[string]proto.InstanceConfig
 	mux *sync.RWMutex
 }
 
@@ -48,23 +47,18 @@ func NewRepo(logger *pct.Logger, configDir string, api pct.APIConnector) *Repo {
 		configDir: configDir,
 		api:       api,
 		// --
-		it:  make(map[string]interface{}),
+		it:  make(map[string]proto.InstanceConfig),
 		mux: &sync.RWMutex{},
 	}
 	return m
 }
 
 func (r *Repo) Init() error {
-	for service, _ := range proto.ExternalService {
-		if err := r.loadInstances(service); err != nil {
-			return fmt.Errorf("%s: %s", service, err)
-		}
-	}
-	return nil
+	return r.loadInstances()
 }
 
-func (r *Repo) loadInstances(service string) error {
-	files, err := filepath.Glob(r.configDir + "/" + service + "-*.conf")
+func (r *Repo) loadInstances() error {
+	files, err := filepath.Glob(r.configDir + "/instance-*.conf")
 	if err != nil {
 		return err
 	}
@@ -72,28 +66,27 @@ func (r *Repo) loadInstances(service string) error {
 	for _, file := range files {
 		r.logger.Debug("Reading " + file)
 
-		// 0       1
-		// service-id
 		part := strings.Split(strings.TrimSuffix(filepath.Base(file), ".conf"), "-")
 		if len(part) != 2 {
 			return errors.New("Invalid instance file name: " + file)
 		}
-		service := part[0]
-		id, err := strconv.ParseUint(part[1], 10, 32)
-		if err != nil {
-			return err
-		}
-		if !valid(service, uint(id)) {
-			return pct.InvalidServiceInstanceError{Service: service, Id: uint(id)}
+		id := part[1]
+		if !valid(id) {
+			return fmt.Errorf("Invalid instance file name: %s", file)
 		}
 
 		data, err := ioutil.ReadFile(file)
 		if err != nil {
-			return errors.New(file + ":" + err.Error())
+			return fmt.Errorf("%s: %v", file, err)
 		}
 
-		if err := r.Add(service, uint(id), data, false); err != nil {
-			return errors.New(file + ":" + err.Error())
+		var it *proto.InstanceConfig
+		if err := json.Unmarshal(data, &it); err != nil {
+			return fmt.Errorf("Could not unmarshal file %s: %v", file, err)
+		}
+
+		if err := r.Add(*it, false); err != nil {
+			return fmt.Errorf("%s: %v", file, err)
 		}
 
 		r.logger.Info("Loaded " + file)
@@ -101,174 +94,149 @@ func (r *Repo) loadInstances(service string) error {
 	return nil
 }
 
-func (r *Repo) Add(service string, id uint, data []byte, writeToDisk bool) error {
+func (r *Repo) Add(it proto.InstanceConfig, writeToDisk bool) error {
 	r.logger.Debug("Add:call")
 	defer r.logger.Debug("Add:return")
-
-	if !valid(service, id) {
-		return pct.InvalidServiceInstanceError{Service: service, Id: id}
-	}
 
 	r.mux.Lock()
 	defer r.mux.Unlock()
 
-	return r.add(service, id, data, writeToDisk)
+	return r.add(it, writeToDisk)
 }
 
-func (r *Repo) add(service string, id uint, data []byte, writeToDisk bool) error {
+func (r *Repo) add(it proto.InstanceConfig, writeToDisk bool) error {
 	r.logger.Debug("add:call")
 	defer r.logger.Debug("add:return")
 
-	var info interface{}
-	switch service {
-	case "server":
-		it := &proto.ServerInstance{}
-		if err := json.Unmarshal(data, it); err != nil {
-			return errors.New("instance.Repo:json.Unmarshal:" + err.Error())
-		}
-		info = it
-	case "mysql":
-		it := &proto.MySQLInstance{}
-		if err := json.Unmarshal(data, it); err != nil {
-			return errors.New("instance.Repo:json.Unmarshal:" + err.Error())
-		}
-		info = it
-	default:
-		return errors.New(fmt.Sprintf("Invalid service name: %s", service))
-	}
-
-	name := r.Name(service, id)
-	if _, ok := r.it[name]; ok {
-		return pct.DuplicateServiceInstanceError{Service: service, Id: id}
+	if _, ok := r.it[it.UUID]; ok {
+		return pct.DuplicateInstanceError{Id: it.UUID}
 	}
 
 	if writeToDisk {
-		if err := pct.Basedir.WriteConfig(name, info); err != nil {
+		if err := pct.Basedir.WriteConfig(r.configName(it.UUID), it); err != nil {
 			return err
 		}
-		r.logger.Info("Added " + name)
+		r.logger.Info("Added " + it.UUID)
 	}
 
-	r.it[name] = info
+	r.it[it.UUID] = it
 	return nil
 }
 
-func (r *Repo) Get(service string, id uint, info interface{}) error {
+func (r *Repo) Get(id string) (it *proto.InstanceConfig, err error) {
 	r.logger.Debug("Get:call")
 	defer r.logger.Debug("Get:return")
 
 	r.mux.Lock()
 	defer r.mux.Unlock()
 
-	return r.get(service, id, info)
+	return r.get(id)
 }
 
-func (r *Repo) get(service string, id uint, info interface{}) error {
+func (r *Repo) get(id string) (it *proto.InstanceConfig, err error) {
 	r.logger.Debug("get:call")
 	defer r.logger.Debug("get:return")
 
-	if reflect.ValueOf(info).Kind() != reflect.Ptr {
-		log.Fatal("info arg is not a pointer; need &T{}")
-	}
-
-	if !valid(service, id) {
-		return pct.InvalidServiceInstanceError{Service: service, Id: id}
+	if !valid(id) {
+		return nil, pct.InvalidInstanceError{Id: id}
 	}
 
 	// Get instance info locally, from file on disk.
-	name := r.Name(service, id)
-	it, ok := r.it[name]
+	inst, ok := r.it[id]
+
 	if !ok {
 		// Get instance info from API.
-		link := r.api.EntryLink("instances")
+		link := r.api.EntryLink("insts")
 		if link == "" {
-			r.logger.Warn("No 'instance' API link")
-			return pct.UnknownServiceInstanceError{Service: service, Id: id}
+			r.logger.Warn("No 'insts' API link")
+			return nil, pct.UnknownInstanceError{Id: id}
 		}
-		url := fmt.Sprintf("%s/%s/%d", link, service, id)
+		url := fmt.Sprintf("%s/%s", link, id)
 		r.logger.Info("GET", url)
 		code, data, err := r.api.Get(r.api.ApiKey(), url)
 		if err != nil {
-			return fmt.Errorf("Failed to get %s instance from %s: %s", name, link, err)
+			return nil, fmt.Errorf("Failed to get %s instance from %s: %s", id, link, err)
 		} else if code != 200 {
-			return fmt.Errorf("Getting %s instance from %s returned code %d, expected 200", name, link, code)
+			return nil, fmt.Errorf("Getting %s instance from %s returned code %d, expected 200", id, link, code)
 		} else if data == nil {
-			return fmt.Errorf("Getting %s instance from %s did not return data")
+			return nil, fmt.Errorf("Getting %s instance from %s did not return data")
 		} else {
+			var it *proto.InstanceConfig
+			if err := json.Unmarshal(data, &it); err != nil {
+				return nil, fmt.Errorf("Failed to unmarshal instance data provided by API: %s", err)
+			}
 			// Save new instance locally.
-			if err := r.add(service, uint(id), data, true); err != nil {
-				return fmt.Errorf("Failed to add new instance: %s", err)
+			if err := r.add(*it, true); err != nil {
+				return nil, fmt.Errorf("Failed to add new instance: %s", err)
 			}
 			// Recurse to re-get and return new instance.
-			return r.get(service, id, info)
+			return r.get(id)
 		}
 	}
 
-	/**
-	 * Yes, we need reflection because "everything in Go is passed by value"
-	 * (http://golang.org/doc/faq#Pointers).  When the caller passes a pointer
-	 * to a struct (*T) as an interface{} arg, the function receives a new
-	 * interface that contains a pointer to the struct.  Therefore, setting
-	 * info = it only sets the new interface, not the underlying struct.
-	 * The only way to access and change the underlying struct of an interface
-	 * is with reflection.  The nex two lines might not make any sense until
-	 * you grok reflection; I leave that to you.
-	 */
-	infoVal := reflect.ValueOf(info).Elem()
-	infoVal.Set(reflect.ValueOf(it).Elem())
-
-	return nil
+	return &inst, nil
 }
 
-func (r *Repo) Remove(service string, id uint) error {
+func (r *Repo) Remove(id string) error {
 	r.logger.Debug("Remove:call")
 	defer r.logger.Debug("Remove:return")
 
 	// todo: API --> agent --> side.Remove()
 	// Agent should stop all services using the instance before call this.
-	if !valid(service, id) {
-		return pct.InvalidServiceInstanceError{Service: service, Id: id}
+	if !valid(id) {
+		return pct.InvalidInstanceError{Id: id}
 	}
 
 	r.mux.Lock()
 	defer r.mux.Unlock()
 
-	name := r.Name(service, id)
-	if _, ok := r.it[name]; !ok {
-		return pct.UnknownServiceInstanceError{Service: service, Id: id}
+	if _, ok := r.it[id]; !ok {
+		return pct.UnknownInstanceError{Id: id}
 	}
 
-	file := r.configDir + "/" + name + ".conf"
+	file := r.configDir + "/instance-" + id + ".conf"
 	r.logger.Info("Removing", file)
 	if err := os.Remove(file); err != nil {
 		return err
 	}
 
-	delete(r.it, name)
-	r.logger.Info("Removed " + name)
+	delete(r.it, id)
+	r.logger.Info("Removed " + id)
 	return nil
 }
 
-func valid(service string, id uint) bool {
-	if _, ok := proto.ExternalService[service]; !ok {
-		return false
-	}
-	if id == 0 {
+func valid(id string) bool {
+	validRE, _ := regexp.Compile("^[[:xdigit:]]{32}$")
+	if !validRE.MatchString(id) {
 		return false
 	}
 	return true
 }
 
-func (r *Repo) Name(service string, id uint) string {
-	return fmt.Sprintf("%s-%d", service, id)
+func (r *Repo) configName(id string) string {
+	return fmt.Sprintf("instance-%s", id)
 }
 
-func (r *Repo) List() []string {
+func (r *Repo) List() []proto.InstanceConfig {
 	r.mux.Lock()
 	defer r.mux.Unlock()
-	instances := []string{}
-	for name, _ := range r.it {
-		instances = append(instances, name)
+	instances := make([]proto.InstanceConfig, 0)
+	for _, inst := range r.it {
+		instances = append(instances, inst)
 	}
 	return instances
+}
+
+func isMySQLConfig(inst *proto.InstanceConfig) bool {
+	if inst.Type == "MySQL" && inst.Prefix == "mysql" {
+		return true
+	}
+	return false
+}
+
+func isOSConfig(inst *proto.InstanceConfig) bool {
+	if inst.Type == "OS" && inst.Prefix == "os" {
+		return true
+	}
+	return false
 }

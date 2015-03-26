@@ -78,3 +78,7 @@ func (s *SlowMySQL) Uptime() (int64, error) {
 func (s *SlowMySQL) SetGlobalDelay(delay time.Duration) {
 	s.globalDelay = delay
 }
+
+func (s *SlowMySQL) AtLeastVersion(v string) (bool, error) {
+	return s.realConnection.AtLeastVersion(v)
+}

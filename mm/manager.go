@@ -26,16 +26,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"path/filepath"
+	"sync"
+	"time"
+
 	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/data"
 	"github.com/percona/percona-agent/instance"
 	"github.com/percona/percona-agent/mrms"
 	"github.com/percona/percona-agent/pct"
 	"github.com/percona/percona-agent/ticker"
-	"io/ioutil"
-	"path/filepath"
-	"sync"
-	"time"
 )
 
 // We use one binding per unique mm.Report interval.  For example, if some monitors
@@ -325,7 +326,8 @@ func (m *Manager) getMonitorConfig(cmd *proto.Cmd) (*Config, string, error) {
 	}
 
 	// The real name of the internal service, e.g. mm-mysql-1:
-	name := "mm-" + m.im.Name(mm.Service, mm.InstanceId)
-
+	// TODO: FIX THIS - COMMENTED ON instance refactor
+	//name := "mm-" + m.im.Name(mm.InstanceId)
+	name := ""
 	return mm, name, nil
 }

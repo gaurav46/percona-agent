@@ -29,6 +29,7 @@ type QanAnalyzer struct {
 	StopChan  chan bool
 	ErrorChan chan error
 	CrashChan chan bool
+	config    qan.Config
 }
 
 func NewQanAnalyzer() *QanAnalyzer {
@@ -37,6 +38,7 @@ func NewQanAnalyzer() *QanAnalyzer {
 		StopChan:  make(chan bool, 1),
 		ErrorChan: make(chan error, 1),
 		CrashChan: make(chan bool, 1),
+		config:    qan.Config{},
 	}
 	return a
 }
@@ -59,6 +61,14 @@ func (a *QanAnalyzer) Status() map[string]string {
 
 func (a *QanAnalyzer) String() string {
 	return "qan-analyzer"
+}
+
+func (a *QanAnalyzer) Config() qan.Config {
+	return a.config
+}
+
+func (a *QanAnalyzer) SetConfig(config qan.Config) {
+	a.config = config
 }
 
 // --------------------------------------------------------------------------
@@ -112,6 +122,11 @@ func (f *QanAnalyzerFactory) Make(
 ) qan.Analyzer {
 	if f.n < len(f.analyzers) {
 		a := f.analyzers[f.n]
+		// The factory is supposed to provide the config as an initialization
+		// parameter for the created qan.Analizer but since we are mocking
+		// and need to create the analyzer and pass it to the factory first,
+		// we just set the config here.
+		a.SetConfig(config)
 		f.n++
 		args := AnalyzerArgs{
 			Config:      config,

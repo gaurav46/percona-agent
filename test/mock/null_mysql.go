@@ -25,12 +25,16 @@ import (
 )
 
 type NullMySQL struct {
-	set         []mysql.Query
-	explain     map[string]*proto.ExplainResult
-	uptime      int64
-	uptimeCount uint
-	stringVars  map[string]string
-	SetChan     chan bool
+	set               []mysql.Query
+	explain           map[string]*proto.ExplainResult
+	uptime            int64
+	uptimeCount       uint
+	stringVars        map[string]string
+	numberVars        map[string]float64
+	SetChan           chan bool
+	atLeastVersion    bool
+	atLeastVersionErr error
+	Version           string
 }
 
 func NewNullMySQL() *NullMySQL {
@@ -38,6 +42,7 @@ func NewNullMySQL() *NullMySQL {
 		set:        []mysql.Query{},
 		explain:    make(map[string]*proto.ExplainResult),
 		stringVars: make(map[string]string),
+		numberVars: make(map[string]float64),
 		SetChan:    make(chan bool),
 	}
 	return n
@@ -84,6 +89,8 @@ func (n *NullMySQL) GetSet() []mysql.Query {
 
 func (n *NullMySQL) Reset() {
 	n.set = nil
+	n.stringVars = make(map[string]string)
+	n.numberVars = make(map[string]float64)
 }
 
 func (n *NullMySQL) GetGlobalVarString(varName string) string {
@@ -94,6 +101,18 @@ func (n *NullMySQL) GetGlobalVarString(varName string) string {
 	return ""
 }
 
+func (n *NullMySQL) GetGlobalVarNumber(varName string) float64 {
+	value, ok := n.numberVars[varName]
+	if ok {
+		return value
+	}
+	return 0
+}
+
+func (n *NullMySQL) SetGlobalVarNumber(name string, value float64) {
+	n.numberVars[name] = value
+}
+
 func (n *NullMySQL) SetGlobalVarString(name, value string) {
 	n.stringVars[name] = value
 }
@@ -101,6 +120,16 @@ func (n *NullMySQL) SetGlobalVarString(name, value string) {
 func (n *NullMySQL) Uptime() (int64, error) {
 	n.uptimeCount++
 	return n.uptime, nil
+}
+
+func (n *NullMySQL) AtLeastVersion(v string) (bool, error) {
+	n.Version = v
+	return n.atLeastVersion, n.atLeastVersionErr
+}
+
+func (n *NullMySQL) SetAtLeastVersion(atLeastVersion bool, err error) {
+	n.atLeastVersion = atLeastVersion
+	n.atLeastVersionErr = err
 }
 
 func (n *NullMySQL) GetUptimeCount() uint {

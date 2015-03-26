@@ -47,6 +47,10 @@ func PingAPI(hostname, apiKey string) (bool, *http.Response) {
 	return true, nil
 }
 
+func (a *API) Init(hostname, apiKey string, headers map[string]string) (code int, err error) {
+	return http.StatusOK, nil
+}
+
 func (a *API) Connect(hostname, apiKey, agentUuid string) error {
 	a.hostname = hostname
 	a.apiKey = apiKey
@@ -103,4 +107,8 @@ func (a *API) Post(apiKey, url string, data []byte) (*http.Response, []byte, err
 
 func (a *API) Put(apiKey, url string, data []byte) (*http.Response, []byte, error) {
 	return nil, nil, nil
+}
+
+func (a *API) URL(paths ...string) string {
+	return ""
 }

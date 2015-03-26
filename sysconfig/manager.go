@@ -26,15 +26,16 @@ package sysconfig
 import (
 	"encoding/json"
 	"errors"
+	"io/ioutil"
+	"path/filepath"
+	"sync"
+	"time"
+
 	"github.com/percona/cloud-protocol/proto"
 	"github.com/percona/percona-agent/data"
 	"github.com/percona/percona-agent/instance"
 	"github.com/percona/percona-agent/pct"
 	"github.com/percona/percona-agent/ticker"
-	"io/ioutil"
-	"path/filepath"
-	"sync"
-	"time"
 )
 
 type Manager struct {
@@ -309,7 +310,8 @@ func (m *Manager) getMonitorConfig(cmd *proto.Cmd) (*Config, string, error) {
 	}
 
 	// The real name of the internal service, e.g. sysconfig-mysql-1:
-	name := "sysconfig-" + m.im.Name(c.Service, c.InstanceId)
-
+	// TODO: FIX THIS, COMMENTED ON REFACTOR OF INSTANCE REPO
+	//name := "sysconfig-" + m.im.Name(c.Service, c.InstanceId)
+	name := ""
 	return c, name, nil
 }
